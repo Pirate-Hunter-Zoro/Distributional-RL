@@ -1,7 +1,10 @@
 from turtle import update
-import gym
+import gymnasium as gym
 import numpy as np
-import utils.envs, utils.seed, utils.buffers, utils.torch
+from src.utils.envs import *
+from src.utils.seed import *
+from src.utils.buffers import *
+from src.utils.torch import *
 import torch
 import tqdm
 import matplotlib.pyplot as plt
@@ -14,7 +17,7 @@ warnings.filterwarnings("ignore")
 
 # Constants
 SEEDS = [1, 2, 3, 4, 5]
-t = utils.torch.TorchHelper()
+t = TorchHelper()
 DEVICE = t.device
 OBS_N = 4               # State space size
 ACT_N = 2               # Action space size
@@ -42,12 +45,10 @@ Q = None
 # Create target network
 # Create optimizer
 def create_everything(seed):
-    utils.seed.seed(seed)
-    env = utils.envs.TimeLimit(utils.envs.NoisyCartPole(), 500)
-    env.seed(seed)
-    test_env = utils.envs.TimeLimit(utils.envs.NoisyCartPole(), 500)
-    test_env.seed(seed)
-    buf = utils.buffers.ReplayBuffer(BUFSIZE)
+    create_seed(seed)
+    env = TimeLimit(NoisyCartPole(), 500)
+    test_env = TimeLimit(NoisyCartPole(), 500)
+    buf = ReplayBuffer(BUFSIZE)
     Q = torch.nn.Sequential(
         torch.nn.Linear(OBS_N, HIDDEN), torch.nn.ReLU(),
         torch.nn.Linear(HIDDEN, HIDDEN), torch.nn.ReLU(),
@@ -135,7 +136,7 @@ def train(seed):
     for epi in pbar:
 
         # Play an episode and log episodic reward
-        S, A, R = utils.envs.play_episode_rb(env, policy, buf)
+        S, A, R = play_episode_rb(env, policy, buf)
         
         # Train after collecting sufficient experience
         if epi >= TRAIN_AFTER_EPISODES:
@@ -147,7 +148,7 @@ def train(seed):
         # Evaluate for TEST_EPISODES number of episodes
         Rews = []
         for epj in range(TEST_EPISODES):
-            S, A, R = utils.envs.play_episode(test_env, policy, render = False)
+            S, A, R = play_episode(test_env, policy, render = False)
             Rews += [sum(R)]
         testRs += [sum(Rews)/TEST_EPISODES]
 

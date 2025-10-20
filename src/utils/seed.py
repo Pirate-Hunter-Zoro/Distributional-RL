@@ -5,7 +5,7 @@ import os
 
 # call seed functions
 # seednum: seeding number (default - 1)
-def seed(seednum = 1):
+def create_seed(seednum = 1):
     random.seed(seednum)
     np.random.seed(seednum)
     torch.manual_seed(seednum)
