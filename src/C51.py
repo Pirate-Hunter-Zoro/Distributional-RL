@@ -28,11 +28,11 @@ MINIBATCH_SIZE = 128     # How many examples to sample per train step
 GAMMA = 0.99            # Discount factor in episodic reward objective
 LEARNING_RATE = 2.5e-4    # Learning rate for Adam optimizer
 TRAIN_AFTER_STEPS = 10000   # Just collect episodes for these many episodes
-TRAIN_STEPS = 10        # Perform gradient update every TRAIN_STEPS steps
+TRAIN_STEPS = 4        # Perform gradient update every TRAIN_STEPS steps
 BUFSIZE = 10000         # Replay buffer size
 TIME_STEPS = 500000         # Total number of time steps to learn over
 TEST_EPISODES = 10      # Test episodes
-HIDDEN = 128            # Hidden nodes
+HIDDEN = 512            # Hidden nodes
 EVALUATE_EVERY = 30     # Evaluate after training over these many episodes
 TARGET_NETWORK_UPDATE_FREQ = 500 # Target network update frequency by number of steps
 
