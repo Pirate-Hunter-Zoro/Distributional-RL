@@ -7,7 +7,6 @@ from src.utils.buffers import *
 from src.utils.torch import *
 import torch
 import torch.nn as nn
-import tqdm
 import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings("ignore")
@@ -23,28 +22,45 @@ DEVICE = t.device
 OBS_N = 4               # State space size
 ACT_N = 2               # Action space size
 STARTING_EPSILON = 1.0  # Starting epsilon
-STEPS_MAX = 100000      # Gradually reduce epsilon over these many steps
+STEPS_MAX = 250000      # Gradually reduce epsilon over these many time steps
 EPSILON_END = 0.1       # At the end, keep epsilon at this value
-MINIBATCH_SIZE = 64     # How many examples to sample per train step
+MINIBATCH_SIZE = 128     # How many examples to sample per train step
 GAMMA = 0.99            # Discount factor in episodic reward objective
-LEARNING_RATE = 1e-4    # Learning rate for Adam optimizer
-TRAIN_AFTER_EPISODES = 100   # Just collect episodes for these many episodes
-TRAIN_EPOCHS = 5        # Train for these many epochs every time
-BUFSIZE = 100000         # Replay buffer size
-EPISODES = 2000         # Total number of episodes to learn over
+LEARNING_RATE = 2.5e-4    # Learning rate for Adam optimizer
+TRAIN_AFTER_STEPS = 10000   # Just collect episodes for these many episodes
+TRAIN_STEPS = 10        # Perform gradient update every TRAIN_STEPS steps
+BUFSIZE = 10000         # Replay buffer size
+TIME_STEPS = 500000         # Total number of time steps to learn over
 TEST_EPISODES = 10      # Test episodes
-HIDDEN = 512            # Hidden nodes
-TARGET_NETWORK_UPDATE_FREQ = 100 # Target network update frequency
+HIDDEN = 128            # Hidden nodes
+EVALUATE_EVERY = 30     # Evaluate after training over these many episodes
+TARGET_NETWORK_UPDATE_FREQ = 500 # Target network update frequency by number of steps
 
 # Suggested constants
 ATOMS = 51              # Number of atoms for distributional network
-ZRANGE = [0, 200]       # Range for Z projection
+ZRANGE = [0, 500]       # Range for Z projection
 z = torch.linspace(ZRANGE[0], ZRANGE[1], ATOMS).to(DEVICE)
 delta_z = (ZRANGE[1] - ZRANGE[0]) / (ATOMS - 1)
 
 # Global variables
 EPSILON = STARTING_EPSILON
 Z = None
+
+class ModStepTracker:
+    def __init__(self, buf, Z, Zt, OPT):
+        self.time_step = 0
+        self.update_counts = 0
+        self.freq = TRAIN_STEPS
+        self.buf = buf
+        self.Z = Z
+        self.Zt = Zt
+        self.OPT = OPT
+        
+    def increment(self):
+        self.time_step += 1
+        self.time_step
+        if self.time_step % self.freq == 0 and self.time_step >= TRAIN_AFTER_STEPS:
+            update_networks(self.time_step, self.buf, self.Z, self.Zt, self.OPT)
 
 # Create environment
 # Create replay buffer
@@ -69,7 +85,7 @@ def create_everything(seed):
     return env, test_env, buf, Z, Zt, OPT
 
 # Create epsilon-greedy policy
-def policy(env, obs, evaluate=False):
+def policy(obs, tracker, evaluate=False):
 
     global EPSILON, EPSILON_END, STEPS_MAX, Z, z
     obs = t.f(obs).view(-1, OBS_N)  # Convert to torch tensor
@@ -94,12 +110,13 @@ def policy(env, obs, evaluate=False):
     # Epsilon update rule: Keep reducing a small amount over
     # STEPS_MAX number of steps, and at the end, fix to EPSILON_END
     if not evaluate:
+        tracker.increment() # Updates the networks and performs a training iteration if the step is a good value
         EPSILON = max(EPSILON_END, EPSILON - (1.0 / STEPS_MAX))
     
     return action
 
 # Update networks
-def update_networks(epi, buf, Z, Zt, OPT):
+def update_networks(step, buf, Z, Zt, OPT):
     global z, delta_z, GAMMA, ZRANGE, MINIBATCH_SIZE, t
     
     S, A, R, S2, D = buf.sample(MINIBATCH_SIZE, t)
@@ -117,7 +134,7 @@ def update_networks(epi, buf, Z, Zt, OPT):
     target_taken_actions_probs = torch.gather(target_atom_probs, dim=1, index=target_next_actions.view(MINIBATCH_SIZE, 1, 1).expand((MINIBATCH_SIZE, 1, ATOMS))).squeeze() # MINIBATCH_SIZE x ATOMS
     
     # For each action taken in each step of our minibatch, what are the atom probabilities?
-    target_distribution = torch.zeros((MINIBATCH_SIZE, ATOMS))
+    target_distribution = torch.zeros((MINIBATCH_SIZE, ATOMS), device=DEVICE)
     for j in range(ATOMS):
         # Current reward plus discounted value of said atom (for EACH step in the minibatch)
         projected_atom_j = R + GAMMA * z[j] * (1-D) # MINIBATCH_SIZE x 1 (projection happens here)
@@ -149,7 +166,7 @@ def update_networks(epi, buf, Z, Zt, OPT):
     OPT.step()
 
     # Update target network
-    if epi%TARGET_NETWORK_UPDATE_FREQ==0:
+    if step%TARGET_NETWORK_UPDATE_FREQ==0:
         Zt.load_state_dict(Z.state_dict())
 
     return loss
@@ -171,32 +188,28 @@ def train(seed):
     testRs = [] 
     last25testRs = []
     print("Training:")
-    pbar = tqdm.trange(EPISODES)
-    for epi in pbar:
+    tracker = ModStepTracker(buf, Z, Zt, OPT)
+    episodes = 0
+    while tracker.time_step < TIME_STEPS:
 
         # Play an episode and log episodic reward - we are NOT evaluating here; we are training
-        S, A, R = play_episode_rb(env, lambda e, o: policy(e, o, evaluate=False), buf)
+        S, A, R = play_episode_rb(env, lambda o: policy(o, tracker, evaluate=False), buf)
+        # The tracker is keeping track of when we need to update by the time step, but this is for the purpose of the pbar loop above
+        episodes += 1
         
-        # Train after collecting sufficient experience
-        if epi >= TRAIN_AFTER_EPISODES:
-
-            # Train for TRAIN_EPOCHS
-            for tri in range(TRAIN_EPOCHS): 
-                update_networks(epi, buf, Z, Zt, OPT)
-
         # Evaluate for TEST_EPISODES number of episodes
-        Rews = []
-        for epj in range(TEST_EPISODES):
-            # We ARE evaluating - no training here
-            S, A, R = play_episode(test_env, lambda e, o: policy(e, o, evaluate=True), render=False)
-            Rews += [sum(R)]
-        testRs += [sum(Rews)/TEST_EPISODES]
+        if episodes % EVALUATE_EVERY == 0:
+            Rews = []
+            for epj in range(TEST_EPISODES):
+                # We ARE evaluating - no training here
+                S, A, R = play_episode(test_env, lambda o: policy(o, tracker, evaluate=True), render=False)
+                Rews += [sum(R)]
+            testRs += [sum(Rews)/TEST_EPISODES]
 
-        # Update progress bar
-        last25testRs += [sum(testRs[-25:])/len(testRs[-25:])]
-        pbar.set_description("R25(%g)" % (last25testRs[-1]))
+            # Update progress bar
+            last25testRs += [sum(testRs[-25:])/len(testRs[-25:])]
+            print(f"\r{int(tracker.time_step / TIME_STEPS * 100)}% through training... R25({last25testRs[-1]})" + " " * 30, end="", flush=True)
 
-    pbar.close()
     print("Training finished!")
     env.close()
 

@@ -40,7 +40,7 @@ def play_episode(env, policy, render = False):
     done = False
     if render: env.render()
     while not done:
-        action = policy(env, states[-1])
+        action = policy(states[-1])
         actions.append(action)
         obs, reward, done, info = env.step(action)
         if render: env.render()
@@ -58,7 +58,7 @@ def play_episode_rb(env, policy, buf):
     states.append(env.reset())
     done = False
     while not done:
-        action = policy(env, states[-1])
+        action = policy(states[-1])
         actions.append(action)
         obs, reward, done, info = env.step(action)
         buf.add(states[-1], action, reward, obs, done)
