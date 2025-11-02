@@ -23,22 +23,22 @@ DEVICE = t.device
 OBS_N = 4               # State space size
 ACT_N = 2               # Action space size
 STARTING_EPSILON = 1.0  # Starting epsilon
-STEPS_MAX = 10000       # Gradually reduce epsilon over these many steps
+STEPS_MAX = 100000      # Gradually reduce epsilon over these many steps
 EPSILON_END = 0.1       # At the end, keep epsilon at this value
 MINIBATCH_SIZE = 64     # How many examples to sample per train step
 GAMMA = 0.99            # Discount factor in episodic reward objective
 LEARNING_RATE = 1e-4    # Learning rate for Adam optimizer
-TRAIN_AFTER_EPISODES = 10   # Just collect episodes for these many episodes
-TRAIN_EPOCHS = 25        # Train for these many epochs every time
-BUFSIZE = 10000         # Replay buffer size
-EPISODES = 500          # Total number of episodes to learn over
+TRAIN_AFTER_EPISODES = 100   # Just collect episodes for these many episodes
+TRAIN_EPOCHS = 5        # Train for these many epochs every time
+BUFSIZE = 100000         # Replay buffer size
+EPISODES = 2000         # Total number of episodes to learn over
 TEST_EPISODES = 10      # Test episodes
 HIDDEN = 512            # Hidden nodes
-TARGET_NETWORK_UPDATE_FREQ = 10 # Target network update frequency
+TARGET_NETWORK_UPDATE_FREQ = 100 # Target network update frequency
 
 # Suggested constants
 ATOMS = 51              # Number of atoms for distributional network
-ZRANGE = [0, 500]       # Range for Z projection
+ZRANGE = [0, 200]       # Range for Z projection
 z = torch.linspace(ZRANGE[0], ZRANGE[1], ATOMS).to(DEVICE)
 delta_z = (ZRANGE[1] - ZRANGE[0]) / (ATOMS - 1)
 
@@ -69,14 +69,14 @@ def create_everything(seed):
     return env, test_env, buf, Z, Zt, OPT
 
 # Create epsilon-greedy policy
-def policy(env, obs):
+def policy(env, obs, evaluate=False):
 
     global EPSILON, EPSILON_END, STEPS_MAX, Z, z
     obs = t.f(obs).view(-1, OBS_N)  # Convert to torch tensor
     
     # With probability EPSILON, choose a random action
     # Rest of the time, choose argmax_a Q(s, a) 
-    if np.random.rand() < EPSILON:
+    if np.random.rand() < EPSILON and not evaluate:
         action = np.random.randint(ACT_N)
     else:
         ## Each action has a distribution of expected values
@@ -93,7 +93,8 @@ def policy(env, obs):
     
     # Epsilon update rule: Keep reducing a small amount over
     # STEPS_MAX number of steps, and at the end, fix to EPSILON_END
-    EPSILON = max(EPSILON_END, EPSILON - (1.0 / STEPS_MAX))
+    if not evaluate:
+        EPSILON = max(EPSILON_END, EPSILON - (1.0 / STEPS_MAX))
     
     return action
 
@@ -173,8 +174,8 @@ def train(seed):
     pbar = tqdm.trange(EPISODES)
     for epi in pbar:
 
-        # Play an episode and log episodic reward
-        S, A, R = play_episode_rb(env, policy, buf)
+        # Play an episode and log episodic reward - we are NOT evaluating here; we are training
+        S, A, R = play_episode_rb(env, lambda e, o: policy(e, o, evaluate=False), buf)
         
         # Train after collecting sufficient experience
         if epi >= TRAIN_AFTER_EPISODES:
@@ -186,7 +187,8 @@ def train(seed):
         # Evaluate for TEST_EPISODES number of episodes
         Rews = []
         for epj in range(TEST_EPISODES):
-            S, A, R = play_episode(test_env, policy, render = False)
+            # We ARE evaluating - no training here
+            S, A, R = play_episode(test_env, lambda e, o: policy(e, o, evaluate=True), render=False)
             Rews += [sum(R)]
         testRs += [sum(Rews)/TEST_EPISODES]
 
@@ -214,6 +216,7 @@ if __name__ == "__main__":
     curves = []
     for seed in SEEDS:
         curves += [train(seed)]
+        break
 
     # Plot the curve for the given seeds
     plot_arrays(curves, 'b', 'c51')
