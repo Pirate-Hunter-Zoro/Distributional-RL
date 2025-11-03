@@ -32,7 +32,7 @@ TRAIN_STEPS = 1        # Perform gradient update every TRAIN_STEPS steps
 BUFSIZE = 10000         # Replay buffer size
 TIME_STEPS = 500000         # Total number of time steps to learn over
 TEST_EPISODES = 10      # Test episodes
-HIDDEN = 512            # Hidden nodes
+HIDDEN = 128            # Hidden nodes
 EVALUATE_EVERY = 30     # Evaluate after training over these many episodes
 TARGET_NETWORK_UPDATE_FREQ = 500 # Target network update frequency by number of steps
 
@@ -121,17 +121,20 @@ def update_networks(step, buf, Z, Zt, OPT):
     
     S, A, R, S2, D = buf.sample(MINIBATCH_SIZE, t)
     # The same kind of creature we dealt with above in the 'policy' function except it's over an entire batch of states
-    target_atom_prob_logits = Zt(S2).reshape(MINIBATCH_SIZE, ACT_N, ATOMS)
+    atom_prob_logits = Z(S2).reshape(MINIBATCH_SIZE, ACT_N, ATOMS)
     # Softmax to turn to probability distribution over atoms
-    target_atom_probs = torch.softmax(target_atom_prob_logits, dim=2) # MINIBATCH_SIZE x ACT_N x ATOMS
+    atom_probs = torch.softmax(atom_prob_logits, dim=2) # MINIBATCH_SIZE x ACT_N x ATOMS
     # Weight atom values by their probabilies
-    target_actions_weighted_atom_values = target_atom_probs * z # SAME DIM SO FAR
+    actions_weighted_atom_values = atom_probs * z # SAME DIM SO FAR
     # Weighted sum of atom values by their probabilities
-    target_q_values = torch.sum(target_actions_weighted_atom_values, dim=2) # weighted sum of all atom values - MINIBATCH_SIZE x ACT_N x 1
+    q_values = torch.sum(actions_weighted_atom_values, dim=2) # weighted sum of all atom values - MINIBATCH_SIZE x ACT_N x 1
     # For each step in the batch, find the action with the best q_value
-    target_next_actions = torch.argmax(target_q_values, dim=1) # for each state in the minibatch, find the next best action - MINIBATCH_SIZE x 1
-    # Gather the atom probabilities of these next actions to be taken
-    target_taken_actions_probs = torch.gather(target_atom_probs, dim=1, index=target_next_actions.view(MINIBATCH_SIZE, 1, 1).expand((MINIBATCH_SIZE, 1, ATOMS))).squeeze() # MINIBATCH_SIZE x ATOMS
+    next_actions = torch.argmax(q_values, dim=1) # for each state in the minibatch, find the next best action - MINIBATCH_SIZE x 1
+    # Gather the atom probabilities of these next actions to be taken ACCORDING to Qt
+    
+    target_atom_logits = Zt(S2).reshape(MINIBATCH_SIZE, ACT_N, ATOMS)
+    target_atom_probs = torch.softmax(target_atom_logits, dim=2)
+    target_taken_actions_probs = torch.gather(target_atom_probs, dim=1, index=next_actions.view(MINIBATCH_SIZE, 1, 1).expand((MINIBATCH_SIZE, 1, ATOMS))).squeeze() # MINIBATCH_SIZE x ATOMS
     
     # For each action taken in each step of our minibatch, what are the atom probabilities?
     target_distribution = torch.zeros((MINIBATCH_SIZE, ATOMS), device=DEVICE)
