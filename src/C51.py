@@ -38,13 +38,16 @@ TARGET_NETWORK_UPDATE_FREQ = 500 # Target network update frequency by number of 
 
 # Suggested constants
 ATOMS = 51              # Number of atoms for distributional network
-ZRANGE = [0, 500]       # Range for Z projection
-z = torch.linspace(ZRANGE[0], ZRANGE[1], ATOMS).to(DEVICE)
+ZRANGE = [0, 200]       # Range for Z projection
+z = torch.linspace(ZRANGE[0], ZRANGE[1], ATOMS).to(DEVICE).detach()
 delta_z = (ZRANGE[1] - ZRANGE[0]) / (ATOMS - 1)
 
 # Global variables
 EPSILON = STARTING_EPSILON
 Z = None
+
+# TODO
+# dims - replace last dimension with -1, and second to last with -2
 
 class ModStepTracker:
     def __init__(self, buf, Z, Zt, OPT):
@@ -101,10 +104,13 @@ def policy(obs, tracker, evaluate=False):
         # BUT first we need the probabilities of said positions, so use softmax on the logits
         action_atom_probs = torch.softmax(action_atom_logits, dim=1) # ACT_N x ATOMS
         # Multiply the probabilities by the atoms by their respective z-values so now each atom-value is weighted by its expected probability for EACH action
+        # TODO - this could be messing up with z - but we think not
         weighted_atom_values = action_atom_probs * z # ACT_N x ATOMS
         # Find expected q-value for each action by summing each atom value weighted by said atom's probability (which we just computed)
+        # TODO - ensure only ever called with single observation
         expected_q_values = torch.sum(weighted_atom_values, dim=1) # ACT_N x 1
         # Pick the action with the highest resulting expected reward
+        # TODO - ensure only ever called with single observation
         action = torch.argmax(expected_q_values, dim=0).item() # integer
     
     # Epsilon update rule: Keep reducing a small amount over
@@ -119,46 +125,47 @@ def policy(obs, tracker, evaluate=False):
 def update_networks(step, buf, Z, Zt, OPT):
     global z, delta_z, GAMMA, ZRANGE, MINIBATCH_SIZE, t
     
-    S, A, R, S2, D = buf.sample(MINIBATCH_SIZE, t)
-    # The same kind of creature we dealt with above in the 'policy' function except it's over an entire batch of states
-    atom_prob_logits = Z(S2).reshape(MINIBATCH_SIZE, ACT_N, ATOMS)
-    # Softmax to turn to probability distribution over atoms
-    atom_probs = torch.softmax(atom_prob_logits, dim=2) # MINIBATCH_SIZE x ACT_N x ATOMS
-    # Weight atom values by their probabilies
-    actions_weighted_atom_values = atom_probs * z # SAME DIM SO FAR
-    # Weighted sum of atom values by their probabilities
-    q_values = torch.sum(actions_weighted_atom_values, dim=2) # weighted sum of all atom values - MINIBATCH_SIZE x ACT_N x 1
-    # For each step in the batch, find the action with the best q_value
-    next_actions = torch.argmax(q_values, dim=1) # for each state in the minibatch, find the next best action - MINIBATCH_SIZE x 1
-    # Gather the atom probabilities of these next actions to be taken ACCORDING to Qt
+    with torch.no_grad():
+        S, A, R, S2, D = buf.sample(MINIBATCH_SIZE, t)
+        # The same kind of creature we dealt with above in the 'policy' function except it's over an entire batch of states
+        atom_prob_logits = Z(S2).reshape(MINIBATCH_SIZE, ACT_N, ATOMS)
+        # Softmax to turn to probability distribution over atoms
+        atom_probs = torch.softmax(atom_prob_logits, dim=2) # MINIBATCH_SIZE x ACT_N x ATOMS
+        # Weight atom values by their probabilies
+        # TODO - may be a problem - but we think not
+        actions_weighted_atom_values = atom_probs * z # SAME DIM SO FAR
+        # Weighted sum of atom values by their probabilities
+        q_values = torch.sum(actions_weighted_atom_values, dim=2) # weighted sum of all atom values - MINIBATCH_SIZE x ACT_N
+        # For each step in the batch, find the action with the best q_value
+        next_actions = torch.argmax(q_values, dim=1) # for each state in the minibatch, find the next best action - MINIBATCH_SIZE
     
-    target_atom_logits = Zt(S2).reshape(MINIBATCH_SIZE, ACT_N, ATOMS)
-    target_atom_probs = torch.softmax(target_atom_logits, dim=2)
-    target_taken_actions_probs = torch.gather(target_atom_probs, dim=1, index=next_actions.view(MINIBATCH_SIZE, 1, 1).expand((MINIBATCH_SIZE, 1, ATOMS))).squeeze() # MINIBATCH_SIZE x ATOMS
+        # Gather the atom probabilities of these next actions to be taken ACCORDING to Qt
+        target_atom_logits = Zt(S2).reshape(MINIBATCH_SIZE, ACT_N, ATOMS)
+        target_atom_probs = torch.softmax(target_atom_logits, dim=2)
+        target_taken_actions_probs = torch.gather(target_atom_probs, dim=1, index=next_actions.view(MINIBATCH_SIZE, 1, 1).expand((MINIBATCH_SIZE, 1, ATOMS))).squeeze(1) # MINIBATCH_SIZE x ATOMS
     
     # For each action taken in each step of our minibatch, what are the atom probabilities?
     target_distribution = torch.zeros((MINIBATCH_SIZE, ATOMS), device=DEVICE)
-    for j in range(ATOMS):
-        # Current reward plus discounted value of said atom (for EACH step in the minibatch)
-        projected_atom_j = R + GAMMA * z[j] * (1-D) # MINIBATCH_SIZE x 1 (projection happens here)
-        projected_atom_j = torch.clip(projected_atom_j, ZRANGE[0], ZRANGE[1])
-        # For each step in the batch that may not be one of our discrete atom values - find the nearest one that does not exceed it
-        b_float = (projected_atom_j - ZRANGE[0])/delta_z # MINIBATCH_SIZE x 1
-        b_lower = b_float.floor().long() # For each step in the batch, this is the index of the atom closest to the projected atom value without exceeding
-        b_lower = b_lower.clamp(0, ATOMS-1)
-        b_upper = b_float.ceil().long() # Same but closest without going below
-        b_upper = b_upper.clamp(0, ATOMS-1)
-        weight_upper_bin = b_float - b_lower.float() # MINIBATCH_SIZE x 1
-        weight_lower_bin = 1 - weight_upper_bin # MINIBATCH_SIZE x 1
-        # Now grab the probability of this atom over all steps in the batch
-        taken_action_atom_prob = target_taken_actions_probs[:,j] # MINIBATCH_SIZE x 1
-        # Weight the probabilities of the upper and lower bins - since they were closest to the reward we achieved so their probabilities should go up - according to the previous atom's projected value
-        target_distribution.scatter_add(dim=1, index=b_lower.unsqueeze(1), src=(weight_lower_bin*taken_action_atom_prob).unsqueeze(1))
-        target_distribution.scatter_add(dim=1, index=b_upper.unsqueeze(1), src=(weight_upper_bin*taken_action_atom_prob).unsqueeze(1))
+    projected_atom = R.unsqueeze(1) + GAMMA * z.unsqueeze(0) * (1-D.unsqueeze(1)) # MINIBATCH_SIZE x ATOMS (projection happens here)
+    projected_atom = torch.clip(projected_atom, ZRANGE[0], ZRANGE[1])
+    # For each step in the batch that may not be one of our discrete atom values - find the nearest one that does not exceed it
+    # TODO - make sure when you add reward, add to numbers that are in the reward space
+    # TODO - when indexing, make sure we are indexing in the reward space
+    b_float = (projected_atom - ZRANGE[0])/delta_z # MINIBATCH_SIZE x ATOMS
+    b_lower = b_float.floor().long() # For each step in the batch, this is the index of the atom closest to the projected atom value without exceeding
+    b_lower = b_lower.clamp(0, ATOMS-1)
+    b_upper = b_float.ceil().long() # Same but closest without going below
+    b_upper = b_upper.clamp(0, ATOMS-1)
+    weight_upper_bin = b_float - b_lower.float() # MINIBATCH_SIZE x ATOMS
+    weight_lower_bin = 1 - weight_upper_bin # MINIBATCH_SIZE x ATOMS
+    # Weight the probabilities of the upper and lower bins - since they were closest to the reward we achieved so their probabilities should go up - according to the previous atom's projected value
+    target_distribution[:,b_lower] += weight_lower_bin*target_taken_actions_probs
+    target_distribution[:,b_upper] += weight_upper_bin*target_taken_actions_probs
     
     # Now that we have the target distribution of atom probabilities, we can compute the loss
     actions_atom_logits = Z(S).reshape(MINIBATCH_SIZE, ACT_N, ATOMS) # BATCH_SIZE x ACT_N x ATOMS
     # Only grab the logits for the actions we care about
+    # TODO - check on squeezing
     taken_actions_atom_logits = torch.gather(actions_atom_logits, dim=1, index=A.view(MINIBATCH_SIZE, 1, 1).expand((MINIBATCH_SIZE, 1, ATOMS))).squeeze() # BATCH_SIZE x ATOMS
     # Turn those logits into log probabilities
     log_preds = torch.log_softmax(taken_actions_atom_logits, dim=1)
