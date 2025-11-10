@@ -240,7 +240,6 @@ if __name__ == "__main__":
     curves = []
     for seed in SEEDS:
         curves += [train(seed)]
-        break
 
     # Plot the curve for the given seeds
     plot_arrays(curves, 'b', 'c51')
