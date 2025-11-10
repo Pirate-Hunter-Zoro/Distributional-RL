@@ -27,9 +27,9 @@ EPSILON_END = 0.1       # At the end, keep epsilon at this value
 MINIBATCH_SIZE = 128     # How many examples to sample per train step
 GAMMA = 0.99            # Discount factor in episodic reward objective
 LEARNING_RATE = 2.5e-4    # Learning rate for Adam optimizer
-TRAIN_AFTER_STEPS = 10000   # Just collect episodes for these many episodes
+TRAIN_AFTER_STEPS = 100000   # Just collect episodes for these many episodes
 TRAIN_STEPS = 1        # Perform gradient update every TRAIN_STEPS steps
-BUFSIZE = 10000         # Replay buffer size
+BUFSIZE = 100000         # Replay buffer size
 TIME_STEPS = 500000         # Total number of time steps to learn over
 TEST_EPISODES = 10      # Test episodes
 HIDDEN = 128            # Hidden nodes
@@ -159,8 +159,9 @@ def update_networks(step, buf, Z, Zt, OPT):
     weight_upper_bin = b_float - b_lower.float() # MINIBATCH_SIZE x ATOMS
     weight_lower_bin = 1 - weight_upper_bin # MINIBATCH_SIZE x ATOMS
     # Weight the probabilities of the upper and lower bins - since they were closest to the reward we achieved so their probabilities should go up - according to the previous atom's projected value
-    target_distribution[:,b_lower] += weight_lower_bin*target_taken_actions_probs
-    target_distribution[:,b_upper] += weight_upper_bin*target_taken_actions_probs
+    # Correct, precise accumulation
+    target_distribution.scatter_add_(1, b_lower, weight_lower_bin * target_taken_actions_probs)
+    target_distribution.scatter_add_(1, b_upper, weight_upper_bin * target_taken_actions_probs)
     
     # Now that we have the target distribution of atom probabilities, we can compute the loss
     actions_atom_logits = Z(S).reshape(MINIBATCH_SIZE, ACT_N, ATOMS) # BATCH_SIZE x ACT_N x ATOMS
