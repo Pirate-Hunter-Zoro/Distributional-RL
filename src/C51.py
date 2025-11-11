@@ -236,12 +236,14 @@ def plot_arrays(vars, color, label):
 
 if __name__ == "__main__":
 
-    # Train for different seeds
     curves = []
     for seed in SEEDS:
         curves += [train(seed)]
+    min_length = min([len(curve) for curve in curves])
+    sliced_curves = [curve[:min_length] for curve in curves]
 
     # Plot the curve for the given seeds
-    plot_arrays(curves, 'b', 'c51')
+    plot_arrays(sliced_curves, 'b', 'c51')
+    
     plt.legend(loc='best')
     plt.show()
