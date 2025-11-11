@@ -46,9 +46,6 @@ delta_z = (ZRANGE[1] - ZRANGE[0]) / (ATOMS - 1)
 EPSILON = STARTING_EPSILON
 Z = None
 
-# TODO
-# dims - replace last dimension with -1, and second to last with -2
-
 class ModStepTracker:
     def __init__(self, buf, Z, Zt, OPT):
         self.time_step = 0
@@ -104,13 +101,10 @@ def policy(obs, tracker, evaluate=False):
         # BUT first we need the probabilities of said positions, so use softmax on the logits
         action_atom_probs = torch.softmax(action_atom_logits, dim=1) # ACT_N x ATOMS
         # Multiply the probabilities by the atoms by their respective z-values so now each atom-value is weighted by its expected probability for EACH action
-        # TODO - this could be messing up with z - but we think not
         weighted_atom_values = action_atom_probs * z # ACT_N x ATOMS
         # Find expected q-value for each action by summing each atom value weighted by said atom's probability (which we just computed)
-        # TODO - ensure only ever called with single observation
         expected_q_values = torch.sum(weighted_atom_values, dim=1) # ACT_N x 1
         # Pick the action with the highest resulting expected reward
-        # TODO - ensure only ever called with single observation
         action = torch.argmax(expected_q_values, dim=0).item() # integer
     
     # Epsilon update rule: Keep reducing a small amount over
@@ -132,7 +126,6 @@ def update_networks(step, buf, Z, Zt, OPT):
         # Softmax to turn to probability distribution over atoms
         atom_probs = torch.softmax(atom_prob_logits, dim=2) # MINIBATCH_SIZE x ACT_N x ATOMS
         # Weight atom values by their probabilies
-        # TODO - may be a problem - but we think not
         actions_weighted_atom_values = atom_probs * z # SAME DIM SO FAR
         # Weighted sum of atom values by their probabilities
         q_values = torch.sum(actions_weighted_atom_values, dim=2) # weighted sum of all atom values - MINIBATCH_SIZE x ACT_N
@@ -149,8 +142,6 @@ def update_networks(step, buf, Z, Zt, OPT):
     projected_atom = R.unsqueeze(1) + GAMMA * z.unsqueeze(0) * (1-D.unsqueeze(1)) # MINIBATCH_SIZE x ATOMS (projection happens here)
     projected_atom = torch.clip(projected_atom, ZRANGE[0], ZRANGE[1])
     # For each step in the batch that may not be one of our discrete atom values - find the nearest one that does not exceed it
-    # TODO - make sure when you add reward, add to numbers that are in the reward space
-    # TODO - when indexing, make sure we are indexing in the reward space
     b_float = (projected_atom - ZRANGE[0])/delta_z # MINIBATCH_SIZE x ATOMS
     b_lower = b_float.floor().long() # For each step in the batch, this is the index of the atom closest to the projected atom value without exceeding
     b_lower = b_lower.clamp(0, ATOMS-1)
@@ -166,7 +157,6 @@ def update_networks(step, buf, Z, Zt, OPT):
     # Now that we have the target distribution of atom probabilities, we can compute the loss
     actions_atom_logits = Z(S).reshape(MINIBATCH_SIZE, ACT_N, ATOMS) # BATCH_SIZE x ACT_N x ATOMS
     # Only grab the logits for the actions we care about
-    # TODO - check on squeezing
     taken_actions_atom_logits = torch.gather(actions_atom_logits, dim=1, index=A.view(MINIBATCH_SIZE, 1, 1).expand((MINIBATCH_SIZE, 1, ATOMS))).squeeze() # BATCH_SIZE x ATOMS
     # Turn those logits into log probabilities
     log_preds = torch.log_softmax(taken_actions_atom_logits, dim=1)
